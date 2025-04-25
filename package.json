@@ -1,0 +1,49 @@
+{
+  "name": "h2ws",
+  "version": "0.1.0",
+  "description": "HTTP/2 WebSocket server",
+  "keywords": [
+    "websocket",
+    "ws",
+    "h2",
+    "http2",
+    "node",
+    "server"
+  ],
+  "repository": "github:william-kerr/h2ws",
+  "license": "MIT",
+  "sideEffects": false,
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/types/index.d.ts",
+        "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/types/index.d.ts",
+        "default": "./dist/cjs/index.js"
+      }
+    }
+  },
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/types/index.d.ts",
+  "files": [
+    "dist/"
+  ],
+  "scripts": {
+    "build": "pnpm build:cjs && pnpm build:esm",
+    "build:cjs": "tsc -p tsconfig.cjs.json",
+    "build:esm": "tsc -p tsconfig.esm.json",
+    "clean": "rm -rf dist",
+    "prepack": "pnpm clean && pnpm build"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.86",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
