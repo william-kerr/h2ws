@@ -1,0 +1,6 @@
+dist/
+node_modules/
+examples/ssl/*.crt
+examples/ssl/*.key
+*.tsbuildinfo
+h2ws-*.tgz
