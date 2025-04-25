@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>h2ws Client</title>
+  </head>
+  <body>
+    <h1>WebSocket over HTTP/2 Demo</h1>
+    <script>
+      const ws = new WebSocket('/ws')
+
+      ws.onopen = () => {
+        console.log('WebSocket connection established')
+
+        // Send to server
+        ws.send('Hello from client')
+      }
+
+      ws.onmessage = (event) => {
+        console.log('Message received:', event.data)
+      }
+
+      ws.onerror = (err) => {
+        console.error('WebSocket error:', err)
+      }
+
+      ws.onclose = () => {
+        console.log('WebSocket connection closed')
+      }
+    </script>
+  </body>
+</html>
