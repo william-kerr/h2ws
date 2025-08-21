@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import * as http from 'node:http'
-import * as http2 from 'node:http2'
 import * as https from 'node:https'
 import type { AddressInfo } from 'node:net'
 import type { Duplex } from 'node:stream'
@@ -15,13 +14,7 @@ import { WebSocket, type WebSocketOptions } from './websocket.js'
 
 type ServerState = 'RUNNING' | 'CLOSING' | 'CLOSED'
 
-type Http2IncomingRequest = {
-  headers: http2.IncomingHttpHeaders
-  method: string
-  url: string
-}
-
-export type IncomingRequest = http.IncomingMessage | Http2IncomingRequest
+export type IncomingRequest = http.IncomingMessage
 
 interface VerifyClientInfoArg {
   origin: string | undefined
@@ -65,10 +58,10 @@ export interface WebSocketServerOptions extends WebSocketOptions {
    * Pre-created HTTP/S server to use
    *
    * If path is also specified, this server will only handle HTTP/1.1 upgrade
-   * requests or HTTP/2 Extended CONNECT requests matching that path, and ignore
-   * all other paths rather than returning status 400
+   * requests matching that path, and ignore all other paths rather than
+   * returning status 400
    */
-  server?: http.Server | https.Server | http2.Http2Server | http2.Http2SecureServer
+  server?: http.Server | https.Server
 
   /** Hook to reject connections */
   verifyClient?: VerifyClientSync | VerifyClientAsync
@@ -79,7 +72,7 @@ export class WebSocketServer extends EventEmitter {
 
   public clients?: Set<WebSocket>
 
-  private server: http.Server | https.Server | http2.Http2Server | http2.Http2SecureServer | null = null
+  private server: http.Server | https.Server | null = null
   private state: ServerState
   private removeListeners: (() => void) | null
   private shouldEmitClose: boolean
@@ -127,28 +120,8 @@ export class WebSocketServer extends EventEmitter {
 
     if (this.server) {
       this.removeListeners = this.addListeners(this.server, {
-        // HTTP/2 connect -> WebSocket
-        connect: (req: http2.Http2ServerRequest, res: http2.Http2ServerResponse) => {
-          if (isWebSocketConnect(req.headers) && this.shouldHandle(req)) {
-            this.handleConnect(res.stream, req.headers, (ws: WebSocket, innerReq: Http2IncomingRequest) =>
-              this.emit('connection', ws, innerReq)
-            )
-          }
-        },
-
         error: (err: Error) => this.emit('error', err),
         listening: this.emit.bind(this, 'listening'),
-
-        session: (ses) => {
-          /*
-           * RFC 8441 defines an "Extended CONNECT Protocol" extension to
-           * HTTP/2 that may be used to bootstrap the use of an Http2Stream
-           * using the CONNECT method as a tunnel for other communication
-           * protocols (such as WebSockets)
-           */
-          ses.settings({ enableConnectProtocol: true })
-        },
-
         // HTTP/1.1 upgrade -> WebSocket
         upgrade: (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
           if (isWebSocketUpgrade(req.headers) && this.shouldHandle(req)) {
@@ -561,266 +534,6 @@ export class WebSocketServer extends EventEmitter {
   }
 
   /**
-   * Handle established HTTP/2 stream Extended CONNECT request (RFC 8441)
-   * intended to bootstrap WebSocket connection
-   *
-   * 1. Perform WebSocket handshake validation using provided headers
-   * 2. If successful, create WebSocket instance over stream and invoke callback
-   *
-   * @param stream - HTTP/2 stream
-   * @param headers - Headers from CONNECT request, used for WebSocket handshake validation
-   * @param callback - Callback to emit connection
-   */
-  handleConnect(
-    stream: http2.ServerHttp2Stream,
-    headers: http2.IncomingHttpHeaders,
-    callback: (ws: WebSocket, req: Http2IncomingRequest) => void
-  ): void {
-    if (headers[':method'] !== 'CONNECT') {
-      return this.abortConnect(stream, 405, 'Method Not Allowed')
-    }
-
-    if (headers[':protocol'] !== 'websocket') {
-      return this.abortConnect(stream, 400, 'Bad Request: Invalid or missing ":protocol" header for WebSocket')
-    }
-
-    if (!headers[':scheme'] || !headers[':path']) {
-      return this.abortConnect(stream, 400, 'Bad Request: ":scheme" and ":path" headers are required')
-    }
-
-    if (!headers[':authority']) {
-      return this.abortConnect(stream, 400, 'Bad Request: ":authority" header is required')
-    }
-
-    if (headers['upgrade'] || headers['connection'] || headers['sec-websocket-key']) {
-      return this.abortConnect(stream, 400, 'Bad Request: Connection-specific headers are not allowed in HTTP/2')
-    }
-
-    const version = headers['sec-websocket-version'] ? +headers['sec-websocket-version'] : NaN
-    if (version !== 8 && version !== 13) {
-      return this.abortConnect(stream, 426, 'Upgrade Required', {
-        'sec-websocket-version': '13, 8'
-      })
-    }
-
-    // Mimic parts of http.IncomingMessage interface needed for validation helpers
-    const pseudoReq: Http2IncomingRequest = {
-      headers,
-      method: headers[':method'],
-      url: headers[':path']
-    }
-
-    if (!this.shouldHandle(pseudoReq)) {
-      return this.abortConnect(stream, 400)
-    }
-
-    const secWebSocketProtocol = headers['sec-websocket-protocol']
-    let protocols = new Set<string>()
-    if (secWebSocketProtocol !== undefined) {
-      try {
-        protocols = subprotocolParse(secWebSocketProtocol)
-      } catch (err) {
-        const message = 'Invalid Sec-WebSocket-Protocol header'
-        return this.abortConnectOrEmitwsClientError(pseudoReq, stream, 400, message)
-      }
-    }
-
-    const secWebSocketExtensions = headers['sec-websocket-extensions']
-    const extensions: { [key: string]: PerMessageDeflate } = {}
-    if (this.options.perMessageDeflate && secWebSocketExtensions !== undefined) {
-      const perMessageDeflate = new PerMessageDeflate(
-        this.options.perMessageDeflate as PerMessageDeflateOptions,
-        this.options.maxPayload
-      )
-
-      try {
-        const offers = extParse(secWebSocketExtensions)
-        if (offers[PerMessageDeflate.extensionName]) {
-          perMessageDeflate.accept(offers[PerMessageDeflate.extensionName])
-          extensions[PerMessageDeflate.extensionName] = perMessageDeflate
-        }
-      } catch (err) {
-        const message = 'Invalid Sec-WebSocket-Extensions header'
-        return this.abortConnectOrEmitwsClientError(pseudoReq, stream, 400, message)
-      }
-    }
-
-    // Optionally call external client verification handler
-    if (this.options.verifyClient) {
-      const info: VerifyClientInfoArg = {
-        origin: headers['origin'],
-        req: pseudoReq,
-        secure: !!(stream.session.socket as TLSSocket).encrypted // is TLS / SSL secured
-      }
-
-      const verifyClientFn = this.options.verifyClient
-      if (verifyClientFn.length === 2) {
-        ;(verifyClientFn as VerifyClientAsync)(info, (verified, code, message, responseHeaders) => {
-          if (!verified) {
-            return this.abortConnect(stream, code || 401, message, responseHeaders)
-          }
-          this.completeConnect(extensions, protocols, pseudoReq, stream, callback)
-        })
-        return
-      }
-
-      if (!(verifyClientFn as VerifyClientSync)(info)) {
-        return this.abortConnect(stream, 401, 'Client verification failed')
-      }
-    }
-
-    this.completeConnect(extensions, protocols, pseudoReq, stream, callback)
-  }
-
-  /**
-   * Finalize WebSocket connection over HTTP/2 after successful validation
-   *
-   * Send 200 OK response and set up WebSocket instance
-   *
-   * @param extensions - Accepted extensions
-   * @param protocols - Available subprotocols
-   * @param req - HTTP/2 pseudo-request object
-   * @param stream - HTTP/2 stream
-   * @param callback - Callback to emit connection
-   */
-  private completeConnect(
-    extensions: { [key: string]: PerMessageDeflate },
-    protocols: Set<string>,
-    req: Http2IncomingRequest,
-    stream: http2.ServerHttp2Stream,
-    callback: (ws: WebSocket, req: Http2IncomingRequest) => void
-  ): void {
-    if (stream.destroyed || stream.closed) {
-      // Stream already closed, can't proceed
-      return
-    }
-
-    if (stream[this.kWebSocketAttached]) {
-      throw new Error(
-        'server.handleConnect() was called more than once with the same stream, possibly due to a misconfiguration'
-      )
-    }
-
-    if (this.state === 'CLOSING' || this.state === 'CLOSED') {
-      this.abortConnect(stream, 503, 'Service Unavailable')
-      return
-    }
-
-    stream[this.kWebSocketAttached] = true
-
-    const responseHeaders: http.OutgoingHttpHeaders = {
-      ':status': 200
-    }
-
-    const wsOptions: WebSocketOptions = {
-      allowSynchronousEvents: this.options.allowSynchronousEvents,
-      autoPong: this.options.autoPong,
-      maxPayload: this.options.maxPayload,
-      skipUTF8Validation: this.options.skipUTF8Validation
-    }
-
-    const ws = new WebSocket(wsOptions)
-
-    if (protocols.size) {
-      const selectedProtocol: string | false = this.options.handleProtocols
-        ? this.options.handleProtocols(protocols, req)
-        : protocols.values().next().value
-
-      if (selectedProtocol) {
-        responseHeaders['sec-websocket-protocol'] = selectedProtocol
-        ws.protocol = selectedProtocol
-      }
-    }
-
-    const pmdExtension = extensions[PerMessageDeflate.extensionName]
-    if (pmdExtension) {
-      const params = pmdExtension.params
-      const value = extFormat({ [PerMessageDeflate.extensionName]: [params as ExtensionValue] })
-      responseHeaders['sec-websocket-extensions'] = value
-      ws.extensions = extensions
-    }
-
-    // Allow external modification / inspection of response headers
-    this.emit('headers', responseHeaders, req)
-
-    stream.respond(responseHeaders)
-
-    // Set stream as socket
-    ws.setSocket(stream, EMPTY_BUFFER, wsOptions)
-
-    ws.once('close', () => {
-      delete stream[this.kWebSocketAttached]
-    })
-
-    if (this.clients) {
-      this.clients.add(ws)
-      ws.on('close', () => {
-        this.clients.delete(ws)
-        if (this.shouldEmitClose && !this.clients.size) {
-          process.nextTick(() => this.emitClose())
-        }
-      })
-    }
-
-    callback(ws, req)
-  }
-
-  /**
-   * Emit 'wsClientError' event on a WebSocketServer if there is at least one
-   * listener for it, otherwise call abortConnect()
-   *
-   * @param req - HTTP/2 pseudo-request object
-   * @param stream - HTTP/2 stream
-   * @param code - HTTP response status code
-   * @param message - Error message
-   * @param headers - Additional HTTP response headers
-   */
-  private abortConnectOrEmitwsClientError(
-    req: Http2IncomingRequest,
-    stream: http2.ServerHttp2Stream,
-    code: number,
-    message: string,
-    headers?: http.OutgoingHttpHeaders
-  ): void {
-    if (this.listenerCount('wsClientError')) {
-      const err = new Error(message)
-      Error.captureStackTrace(err, this.abortConnectOrEmitwsClientError)
-
-      this.emit('wsClientError', err, stream, req)
-    } else {
-      this.abortConnect(stream, code, message, headers)
-    }
-  }
-
-  /**
-   * Abort WebSocket connection attempt over HTTP/2 by sending error response
-   *
-   * @param stream - HTTP/2 stream
-   * @param code - HTTP response status code
-   * @param message - Optional reason phrase (may not be sent over HTTP/2)
-   * @param headers - Additional HTTP response headers
-   */
-  private abortConnect(
-    stream: http2.ServerHttp2Stream,
-    code: number,
-    message?: string,
-    headers?: http.OutgoingHttpHeaders
-  ): void {
-    if (stream.destroyed || stream.closed || stream.headersSent) {
-      return // cannot send response if already closed or headers sent
-    }
-
-    const responseHeaders: http.OutgoingHttpHeaders = {
-      ...headers,
-      ':status': code
-    }
-    const responseMessage = message || http.STATUS_CODES[code] || String(code)
-
-    stream.respond(responseHeaders)
-    stream.end(responseMessage)
-  }
-
-  /**
    * Add event listeners on EventEmitter using map of <event, listener> pairs
    *
    * @param server - Event emitter
@@ -864,15 +577,4 @@ export class WebSocketServer extends EventEmitter {
  */
 export function isWebSocketUpgrade(headers: http.IncomingHttpHeaders): boolean {
   return headers.upgrade?.toLowerCase() === 'websocket'
-}
-
-/**
- * Perform minimal check to identify if HTTP/2 headers suggest WebSocket
- * connection request using Extended CONNECT method (RFC 8441)
- *
- * @param headers - Incoming HTTP/2 request headers
- * @returns true for CONNECT request for WebSocket connection, false otherwise
- */
-export function isWebSocketConnect(headers: http2.IncomingHttpHeaders): boolean {
-  return headers[':method'] === 'CONNECT' && headers[':protocol'] === 'websocket'
 }

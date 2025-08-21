@@ -1,12 +1,10 @@
 {
   "name": "h2ws",
   "version": "0.1.0",
-  "description": "HTTP/2 WebSocket server",
+  "description": "WebSocket server",
   "keywords": [
     "websocket",
     "ws",
-    "h2",
-    "http2",
     "node",
     "server"
   ],

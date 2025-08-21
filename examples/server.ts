@@ -1,15 +1,10 @@
 import { readFileSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import {
-  createSecureServer,
-  type Http2ServerRequest,
-  type Http2ServerResponse,
-  type SecureServerOptions
-} from 'node:http2'
+import { createServer as createHttpsServer, type ServerOptions as HttpsServerOptions } from 'node:https'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { type IncomingRequest, WebSocket, WebSocketServer, type WebSocketServerOptions } from '../src/index.js' // 'h2ws'
+import { type IncomingRequest, WebSocket, WebSocketServer, type WebSocketServerOptions } from '../src/index.js'
 
 /**
  * Usage:
@@ -25,27 +20,21 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 
 const html = readFileSync(join(__dirname, 'index.html'))
 
-const http2Options: SecureServerOptions = {
-  allowHTTP1: true, // HTTP/1.1 fallback
-
-  // Browsers usually require HTTPS for HTTP/2
+const httpsOptions: HttpsServerOptions = {
   cert: readFileSync(join(__dirname, 'ssl', 'example.crt')),
   key: readFileSync(join(__dirname, 'ssl', 'example.key'))
 }
-const server = createSecureServer(
-  http2Options,
-  (req: IncomingMessage | Http2ServerRequest, res: ServerResponse | Http2ServerResponse) => {
-    if (req.url === '/') {
-      res.writeHead(200, {
-        'Content-Length': Buffer.byteLength(html),
-        'Content-Type': 'text/html'
-      })
-      res.end(html)
-    } else {
-      res.writeHead(404).end()
-    }
+const server = createHttpsServer(httpsOptions, (req: IncomingMessage, res: ServerResponse) => {
+  if (req.url === '/') {
+    res.writeHead(200, {
+      'Content-Length': Buffer.byteLength(html),
+      'Content-Type': 'text/html'
+    })
+    res.end(html)
+  } else {
+    res.writeHead(404).end()
   }
-)
+})
 
 const wsOptions: WebSocketServerOptions = {
   path: '/ws', // ignore paths other than /ws

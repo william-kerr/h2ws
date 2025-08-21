@@ -352,8 +352,8 @@ export class Sender {
   /**
    * Send frame
    *
-   * Handle back pressure for HTTP/2 by checking return value of socket.write()
-   * and relying on WebSocket's 'drain' event listener to resume
+   * Handle back pressure by checking return value of socket.write() and
+   * relying on WebSocket's 'drain' event listener to resume
    *
    * @param list - Frame to send
    * @param callback - Callback

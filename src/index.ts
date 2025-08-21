@@ -3,8 +3,7 @@ export {
   WebSocketServer,
   type WebSocketServerOptions,
   type IncomingRequest,
-  isWebSocketUpgrade,
-  isWebSocketConnect
+  isWebSocketUpgrade
 } from './core/websocket-server.js'
 export { type PerMessageDeflateOptions } from './extensions/permessage-deflate.js'
 export { type SendOptions } from './protocol/sender.js'
